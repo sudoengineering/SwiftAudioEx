@@ -9,6 +9,7 @@
 import Foundation
 import AVFoundation
 import MediaPlayer
+import Accelerate
 
 public enum PlaybackEndedReason: String {
     case playedUntilEnd
@@ -32,12 +33,19 @@ class AVPlayerWrapper: AVPlayerWrapperProtocol {
     let playerItemNotificationObserver: AVPlayerItemNotificationObserver
     let playerItemObserver: AVPlayerItemObserver
     
+    public var decibels: Float = 0
+    public var frequencies: [Float] = []
+    
+    // https://gist.github.com/omarojo/03d08165a1a7962cb30c17ec01f809a3
+    var tap: Unmanaged<MTAudioProcessingTap>?
+    var audioProcessingFormat:  AudioStreamBasicDescription?//UnsafePointer<AudioStreamBasicDescription>?
+    
     /**
      True if the last call to load(from:playWhenReady) had playWhenReady=true.
      */
     fileprivate var _playWhenReady: Bool = true
     fileprivate var _initialTime: TimeInterval?
-
+    
     /// True when the track was paused for the purpose of switching tracks
     fileprivate var _pausedForLoad: Bool = false
     
@@ -62,11 +70,176 @@ class AVPlayerWrapper: AVPlayerWrapperProtocol {
         self.playerTimeObserver.delegate = self
         self.playerItemNotificationObserver.delegate = self
         self.playerItemObserver.delegate = self
-
+        
         // disabled since we're not making use of video playback
         self.avPlayer.allowsExternalPlayback = false;
         
         playerTimeObserver.registerForPeriodicTimeEvents()
+    }
+    
+    class TapCookie {
+        weak var input : AVPlayerWrapper?
+        
+        deinit {
+            print("TapCookie deinit")
+        }
+    }
+    
+    //MARK: GET AUDIO BUFFERS
+    func setupProcessingTap(){
+        let cookie = TapCookie()
+        cookie.input = self
+        
+        let playerItem = avPlayer.currentItem!
+        var callbacks = MTAudioProcessingTapCallbacks(
+            version: kMTAudioProcessingTapCallbacksVersion_0,
+            clientInfo: UnsafeMutableRawPointer(Unmanaged.passRetained(cookie).toOpaque()),
+            init: tapInit,
+            finalize: tapFinalize,
+            prepare: tapPrepare,
+            unprepare: tapUnprepare,
+            process: tapProcess)
+        
+        var tap: Unmanaged<MTAudioProcessingTap>?
+        let err = MTAudioProcessingTapCreate(kCFAllocatorDefault, &callbacks, kMTAudioProcessingTapCreationFlag_PreEffects, &tap)
+        self.tap = tap
+        
+        if err == noErr {
+        }
+        
+        let audioTrack = playerItem.asset.tracks(withMediaType: AVMediaType.audio).first!
+        let inputParams = AVMutableAudioMixInputParameters(track: audioTrack)
+        inputParams.audioTapProcessor = tap?.takeUnretainedValue()
+        tap?.release()
+        
+        // print("inputParms: \(inputParams), \(inputParams.audioTapProcessor)\n")
+        let audioMix = AVMutableAudioMix()
+        audioMix.inputParameters = [inputParams]
+        
+        playerItem.audioMix = audioMix
+    }
+    
+    //MARK: TAP CALLBACKS
+    
+    let tapInit: MTAudioProcessingTapInitCallback = {
+        (tap, clientInfo, tapStorageOut) in
+        tapStorageOut.pointee = clientInfo
+        
+        print("init \n")
+        
+    }
+    
+    let tapFinalize: MTAudioProcessingTapFinalizeCallback = {
+        (tap) in
+        print("finalize \(tap)\n")
+        
+        Unmanaged<TapCookie>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).release()
+    }
+    
+    let tapPrepare: MTAudioProcessingTapPrepareCallback = {
+        (tap, itemCount, basicDescription) in
+        print("prepare: \n")
+        let cookie = Unmanaged<TapCookie>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).takeUnretainedValue()
+        let selfMediaInput = cookie.input!
+        
+        selfMediaInput.audioProcessingFormat = AudioStreamBasicDescription(mSampleRate: basicDescription.pointee.mSampleRate,
+                                                                           mFormatID: basicDescription.pointee.mFormatID, mFormatFlags: basicDescription.pointee.mFormatFlags, mBytesPerPacket: basicDescription.pointee.mBytesPerPacket, mFramesPerPacket: basicDescription.pointee.mFramesPerPacket, mBytesPerFrame: basicDescription.pointee.mBytesPerFrame, mChannelsPerFrame: basicDescription.pointee.mChannelsPerFrame, mBitsPerChannel: basicDescription.pointee.mBitsPerChannel, mReserved: basicDescription.pointee.mReserved)
+    }
+    
+    let tapUnprepare: MTAudioProcessingTapUnprepareCallback = {
+        (tap) in
+        print("unprepare \(tap)\n")
+    }
+    
+    let tapProcess: MTAudioProcessingTapProcessCallback = {
+        (tap, numberFrames, flags, bufferListInOut, numberFramesOut, flagsOut) in
+        let cookie = Unmanaged<TapCookie>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).takeUnretainedValue()
+        guard let selfMediaInput = cookie.input else {
+            print("Tap callback: AVPlayerWrapper was deallocated!")
+            return
+        }
+        
+        let status = MTAudioProcessingTapGetSourceAudio(tap, numberFrames, bufferListInOut, flagsOut, nil, numberFramesOut)
+        if status != noErr {
+            print("Error TAPGetSourceAudio :\(String(describing: status.description))")
+            return
+        }
+        
+        if #available(iOS 13.0, *) {
+            selfMediaInput.processAudioData(audioData: bufferListInOut, framesNumber: UInt32(numberFrames))
+        } else {
+            // Fallback on earlier versions
+        }
+    }
+    //??
+    @available(iOS 13.0, *)
+    func processAudioData(audioData: UnsafeMutablePointer<AudioBufferList>, framesNumber: UInt32) {
+        var sbuf: CMSampleBuffer?
+        var status : OSStatus?
+        var format: CMFormatDescription?
+        
+        
+        
+        //FORMAT
+        //           var audioFormat = self.audioProcessingFormat?.pointee
+        guard var audioFormat = self.audioProcessingFormat else {
+            return
+        }
+        
+        status = CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault, asbd: &audioFormat, layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &format)
+        
+        if status != noErr {
+            print("Error CMAudioFormatDescriptionCreater :\(String(describing: status?.description))")
+            return
+        }
+        
+        var timing = CMSampleTimingInfo(duration: CMTimeMake(value: 1, timescale: Int32(audioFormat.mSampleRate)), presentationTimeStamp: self.avPlayer.currentTime(), decodeTimeStamp: CMTime.invalid)
+        
+        
+        //?? Create an empty sample buffer `sbuf`
+        status = CMSampleBufferCreate(allocator: kCFAllocatorDefault,
+                                      dataBuffer: nil,
+                                      dataReady: Bool(truncating: 0),
+                                      makeDataReadyCallback: nil,
+                                      refcon: nil,
+                                      formatDescription: format,
+                                      sampleCount: CMItemCount(framesNumber),
+                                      sampleTimingEntryCount: 1,
+                                      sampleTimingArray: &timing,
+                                      sampleSizeEntryCount: 0, sampleSizeArray: nil,
+                                      sampleBufferOut: &sbuf);
+        if status != noErr {
+            print("Error CMSampleBufferCreate :\(String(describing: status?.description))")
+            return
+        }
+        
+        //?? Copy all the data into the sbuf sample buffer from audioData that got passed in
+//        status =   CMSampleBufferSetDataBufferFromAudioBufferList(sbuf!,
+//                                                                  blockBufferAllocator: kCFAllocatorDefault ,
+//                                                                  blockBufferMemoryAllocator: kCFAllocatorDefault,
+//                                                                  flags: 0,
+//                                                                  bufferList: audioData)
+                   let data = Data(bytes: audioData.pointee.mBuffers.mData!, count: Int(audioData.pointee.mBuffers.mDataByteSize))
+
+        //Convert to typed Float32 array
+        let samples = data.withUnsafeBytes {
+            UnsafeBufferPointer<Float32>(start: $0.baseAddress?.assumingMemoryBound(to: Float32.self) , count: data.count / MemoryLayout<Float32>.size)
+        }
+        //Convert to Float Array
+        let count = samples.count
+        var floats: [Float] = Array(repeating: 0.0, count: count)
+        
+        //?? Can we do this with SIMD?
+        for i in 0..<count {
+            floats[i] = (samples[i] / 2.0 + 0.5) * 256.0
+        }
+        //Initiate FFT
+        self.frequencies = floats
+        
+        if status != noErr {
+            print("Error cCMSampleBufferSetDataBufferFromAudioBufferList :\(String(describing: status?.description))")
+            return
+        }
     }
     
     // MARK: - AVPlayerWrapperProtocol
@@ -176,12 +349,10 @@ class AVPlayerWrapper: AVPlayerWrapperProtocol {
         }
     }
     
-    
-    
     func load(from url: URL, playWhenReady: Bool, options: [String: Any]? = nil) {
         reset(soft: true)
         _playWhenReady = playWhenReady
-
+        
         if currentItem?.status == .failed {
             recreateAVPlayer()
         }
@@ -207,6 +378,7 @@ class AVPlayerWrapper: AVPlayerWrapperProtocol {
                             let currentItem = AVPlayerItem(asset: pendingAsset, automaticallyLoadedAssetKeys: [Constants.assetPlayableKey])
                             currentItem.preferredForwardBufferDuration = self.bufferDuration
                             self.avPlayer.replaceCurrentItem(with: currentItem)
+                            self.setupProcessingTap()
                             
                             // Register for events
                             self.playerTimeObserver.registerForBoundaryTimeEvents()
@@ -239,10 +411,10 @@ class AVPlayerWrapper: AVPlayerWrapperProtocol {
     
     func load(from url: URL, playWhenReady: Bool, initialTime: TimeInterval? = nil, options: [String : Any]? = nil) {
         _initialTime = initialTime
-
+        
         _pausedForLoad = true
         self.pause()
-
+        
         self.load(from: url, playWhenReady: playWhenReady, options: options)
     }
     
@@ -353,7 +525,7 @@ extension AVPlayerWrapper: AVPlayerItemObserverDelegate {
     func item(didUpdateDuration duration: Double) {
         self.delegate?.AVWrapper(didUpdateDuration: duration)
     }
-
+    
     func item(didReceiveMetadata metadata: [AVMetadataItem]) {
         self.delegate?.AVWrapper(didReceiveMetadata: metadata)
     }

@@ -37,7 +37,10 @@ protocol AVPlayerWrapperProtocol: class {
     var isMuted: Bool { get set }
     
     var automaticallyWaitsToMinimizeStalling: Bool { get set }
-        
+    
+    var decibels: Float { get set }
+    
+    var frequencies: [Float] {get set}
     
     func play()
     

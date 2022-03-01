@@ -80,6 +80,7 @@ class AVPlayerWrapper: AVPlayerWrapperProtocol {
     }
     
     //MARK: GET AUDIO BUFFERS
+
     func setupProcessingTap(){
         let ref = AVPlayerWrapperWeakRef()
         ref.value = self
@@ -116,26 +117,19 @@ class AVPlayerWrapper: AVPlayerWrapperProtocol {
     let tapInit: MTAudioProcessingTapInitCallback = {
         (tap, clientInfo, tapStorageOut) in
         tapStorageOut.pointee = clientInfo
-        
-        print("init \n")
-        
     }
     
     let tapFinalize: MTAudioProcessingTapFinalizeCallback = {
         (tap) in
-        print("finalize \(tap)\n")
-        
         Unmanaged<AVPlayerWrapperWeakRef>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).release()
     }
     
     let tapPrepare: MTAudioProcessingTapPrepareCallback = {
         (tap, itemCount, basicDescription) in
-        print("prepare: \n")
     }
     
     let tapUnprepare: MTAudioProcessingTapUnprepareCallback = {
         (tap) in
-        print("unprepare \(tap)\n")
     }
     
     let tapProcess: MTAudioProcessingTapProcessCallback = {

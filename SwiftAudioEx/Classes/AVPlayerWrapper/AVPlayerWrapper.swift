@@ -9,7 +9,6 @@
 import Foundation
 import AVFoundation
 import MediaPlayer
-import Accelerate
 
 public enum PlaybackEndedReason: String {
     case playedUntilEnd
@@ -40,10 +39,10 @@ class AVPlayerWrapper: AVPlayerWrapperProtocol {
      */
     fileprivate var _playWhenReady: Bool = true
     fileprivate var _initialTime: TimeInterval?
-    
+
     /// True when the track was paused for the purpose of switching tracks
     fileprivate var _pausedForLoad: Bool = false
-    
+
     fileprivate var _state: AVPlayerWrapperState = AVPlayerWrapperState.idle {
         didSet {
             if oldValue != _state {
@@ -286,11 +285,11 @@ class AVPlayerWrapper: AVPlayerWrapperProtocol {
          }
        }
      }
-    
+
     func load(from url: URL, playWhenReady: Bool, options: [String: Any]? = nil) {
         reset(soft: true)
         _playWhenReady = playWhenReady
-        
+
         if currentItem?.status == .failed {
             recreateAVPlayer()
         }
@@ -349,10 +348,10 @@ class AVPlayerWrapper: AVPlayerWrapperProtocol {
     
     func load(from url: URL, playWhenReady: Bool, initialTime: TimeInterval? = nil, options: [String : Any]? = nil) {
         _initialTime = initialTime
-        
+
         _pausedForLoad = true
         self.pause()
-        
+
         self.load(from: url, playWhenReady: playWhenReady, options: options)
     }
     
@@ -463,7 +462,7 @@ extension AVPlayerWrapper: AVPlayerItemObserverDelegate {
     func item(didUpdateDuration duration: Double) {
         self.delegate?.AVWrapper(didUpdateDuration: duration)
     }
-    
+
     func item(didReceiveMetadata metadata: [AVMetadataItem]) {
         self.delegate?.AVWrapper(didReceiveMetadata: metadata)
     }

@@ -33,7 +33,6 @@ class AVPlayerWrapper: AVPlayerWrapperProtocol {
     let playerItemNotificationObserver: AVPlayerItemNotificationObserver
     let playerItemObserver: AVPlayerItemObserver
     
-    public var decibels: Float = 0
     public var frequencies: [Float] = []
     
     /**

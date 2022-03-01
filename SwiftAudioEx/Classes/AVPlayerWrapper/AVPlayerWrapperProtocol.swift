@@ -38,8 +38,6 @@ protocol AVPlayerWrapperProtocol: class {
     
     var automaticallyWaitsToMinimizeStalling: Bool { get set }
     
-    var decibels: Float { get set }
-    
     var frequencies: [Float] {get set}
     
     func play()

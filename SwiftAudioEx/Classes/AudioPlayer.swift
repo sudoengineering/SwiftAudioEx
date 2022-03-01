@@ -81,10 +81,6 @@ public class AudioPlayer: AVPlayerWrapperDelegate {
         return wrapper.state
     }
     
-    public var decibels : Float {
-        return wrapper.decibels
-    }
-    
     public var frequencies : [Float] {
         return wrapper.frequencies
     }
